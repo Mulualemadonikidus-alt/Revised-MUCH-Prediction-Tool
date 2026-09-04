@@ -6,82 +6,116 @@ import pandas as pd
 # CONFIGURATION & PAGE TITLE
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Revised TASH MUCH Prediction Tool (Model A)",
+    page_title="TASH MUCH Prediction Tool (Model A & Sullivan Score)",
     page_icon="🩺",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ---------------------------------------------------------------------------
-# MODEL COEFFICIENTS & CONSTANTS (Model A Source of Truth)
+# MODEL COEFFICIENTS & CONSTANTS (Refit Raw & Shrunk Model A)
 # ---------------------------------------------------------------------------
-INTERCEPT = -8.297
-B_SBP = 0.063
-B_DIABETES = 0.782
-B_MED_COUNT = 0.000
-B_AGE = 0.012
+# Raw Model A Maximum-Likelihood Coefficients (Table 1.1)
+RAW_INTERCEPT = -8.29658
+RAW_B_SBP = 0.06273
+RAW_B_DIABETES = 0.78240
+RAW_B_MED_COUNT = 0.00010
+RAW_B_AGE = 0.01155
 
-SBP_MIN, SBP_MAX = 90, 139
-AGE_MIN, AGE_MAX = 18, 100
+# Bootstrap Shrinkage & Offset-Recalibrated Model A Coefficients (Table 3.1 & 3.2)
+SHRINKAGE_FACTOR_GAMMA = 0.7709
+SHRUNK_INTERCEPT = -6.3221
+SHRUNK_B_SBP = 0.04836
+SHRUNK_B_DIABETES = 0.60316
+SHRUNK_B_MED_COUNT = 0.00008
+SHRUNK_B_AGE = 0.00891
 
-# Simplified integer score reference baselines
-REF_SBP = 100
-REF_AGE = 30
-BASE_UNIT = B_AGE * 10  # 0.12
+# Authoritative Score-to-Probability Recalibration Model (Section 5.2)
+SCORE_RECAL_INTERCEPT = -1.8494
+SCORE_RECAL_SLOPE = 0.1089
 
-POINTS_PER_10_SBP = round((B_SBP * 10) / BASE_UNIT)  # 5
-POINTS_DIABETES = round(B_DIABETES / BASE_UNIT)     # 7
-POINTS_PER_10_AGE = round((B_AGE * 10) / BASE_UNIT) # 1
-POINTS_PER_MED = round(B_MED_COUNT / BASE_UNIT)     # 0
+# Predictor Range Boundaries
+SBP_MIN, SBP_MAX = 90.0, 139.0
+AGE_MIN, AGE_MAX = 18.0, 100.0
 
 # ---------------------------------------------------------------------------
 # HELPER FUNCTIONS
 # ---------------------------------------------------------------------------
 def calculate_much_probability(sbp: float, diabetes: int, med_count: int, age: float) -> dict:
-    """Computes continuous logistic regression probability for Model A."""
-    contrib_sbp = B_SBP * sbp
-    contrib_diabetes = B_DIABETES * diabetes
-    contrib_med_count = B_MED_COUNT * med_count
-    contrib_age = B_AGE * age
-    
-    log_odds = INTERCEPT + contrib_sbp + contrib_diabetes + contrib_med_count + contrib_age
-    probability = 1.0 / (1.0 + math.exp(-log_odds))
-    
+    """Computes continuous logistic regression probability for Raw and Shrunk Model A."""
+    # Raw Model Calculations
+    raw_contrib_sbp = RAW_B_SBP * sbp
+    raw_contrib_diabetes = RAW_B_DIABETES * diabetes
+    raw_contrib_med_count = RAW_B_MED_COUNT * med_count
+    raw_contrib_age = RAW_B_AGE * age
+    raw_log_odds = RAW_INTERCEPT + raw_contrib_sbp + raw_contrib_diabetes + raw_contrib_med_count + raw_contrib_age
+    raw_prob = 1.0 / (1.0 + math.exp(-raw_log_odds))
+
+    # Shrunk & Recalibrated Model Calculations
+    shrunk_contrib_sbp = SHRUNK_B_SBP * sbp
+    shrunk_contrib_diabetes = SHRUNK_B_DIABETES * diabetes
+    shrunk_contrib_med_count = SHRUNK_B_MED_COUNT * med_count
+    shrunk_contrib_age = SHRUNK_B_AGE * age
+    shrunk_log_odds = SHRUNK_INTERCEPT + shrunk_contrib_sbp + shrunk_contrib_diabetes + shrunk_contrib_med_count + shrunk_contrib_age
+    shrunk_prob = 1.0 / (1.0 + math.exp(-shrunk_log_odds))
+
     return {
-        "contrib_sbp": contrib_sbp,
-        "contrib_diabetes": contrib_diabetes,
-        "contrib_med_count": contrib_med_count,
-        "contrib_age": contrib_age,
-        "constant": INTERCEPT,
-        "log_odds": log_odds,
-        "probability": probability
+        "raw_log_odds": raw_log_odds,
+        "raw_prob": raw_prob,
+        "shrunk_log_odds": shrunk_log_odds,
+        "shrunk_prob": shrunk_prob,
+        "raw_contrib_sbp": raw_contrib_sbp,
+        "raw_contrib_diabetes": raw_contrib_diabetes,
+        "raw_contrib_med_count": raw_contrib_med_count,
+        "raw_contrib_age": raw_contrib_age,
+        "shrunk_contrib_sbp": shrunk_contrib_sbp,
+        "shrunk_contrib_diabetes": shrunk_contrib_diabetes,
+        "shrunk_contrib_med_count": shrunk_contrib_med_count,
+        "shrunk_contrib_age": shrunk_contrib_age,
     }
 
-def calculate_simplified_score(sbp: float, diabetes: int, med_count: int, age: float) -> dict:
-    """Computes bedside integer point score approximation for Model A."""
-    pts_sbp = round(POINTS_PER_10_SBP * (sbp - REF_SBP) / 10)
-    pts_diabetes = POINTS_DIABETES if diabetes == 1 else 0
-    pts_age = round(POINTS_PER_10_AGE * (age - REF_AGE) / 10)
-    pts_med = POINTS_PER_MED * med_count
-    
+def calculate_sullivan_score(sbp: float, diabetes: int, med_count: int, age: float) -> dict:
+    """Computes Sullivan-method integer point score and recalibrated probability (Section 4 & 5.2)."""
+    # 1. SBP: 90–99 mmHg = 0 pts; +5 pts for every 10 mmHg above 99 mmHg
+    pts_sbp = int(max(0.0, (sbp - 90.0) // 10.0)) * 5
+
+    # 2. Diabetes: Absent = 0 pts, Present = 7 pts
+    pts_diabetes = 7 if diabetes == 1 else 0
+
+    # 3. Age: 30–39 yrs = 0 pts; +1 pt for every decade after 39 yrs
+    if age < 40.0:
+        pts_age = 0
+    else:
+        pts_age = int((age - 30.0) // 10.0)
+
+    # 4. Antihypertensive Medications: Retained at 0 pts (§4.4)
+    pts_med = 0
+
     total_pts = pts_sbp + pts_diabetes + pts_age + pts_med
-    
+
+    # Authoritative Score-to-Probability Recalibration Equation (§5.2)
+    score_log_odds = SCORE_RECAL_INTERCEPT + (SCORE_RECAL_SLOPE * total_pts)
+    score_prob = 1.0 / (1.0 + math.exp(-score_log_odds))
+
+    # Risk Tiers aligned with TRIPOD derivation thresholds (§7)
     if total_pts < 10:
-        tier = "Low Risk (<10 pts)"
+        tier = "Low Risk (<10 pts; P < 0.30)"
         color = "green"
     elif total_pts < 20:
-        tier = "Moderate Risk (10–19 pts)"
+        tier = "Intermediate Risk (10–19 pts; P: 0.30–0.58)"
         color = "orange"
     else:
-        tier = "High Risk (≥20 pts) → ABPM Referral Indicated"
+        tier = "High Risk (≥20 pts; P ≥ 0.58) → ABPM Referral Indicated"
         color = "red"
-        
+
     return {
         "pts_sbp": pts_sbp,
         "pts_diabetes": pts_diabetes,
         "pts_age": pts_age,
         "pts_med": pts_med,
         "total": total_pts,
+        "score_prob": score_prob,
+        "score_log_odds": score_log_odds,
         "tier": tier,
         "color": color
     }
@@ -89,17 +123,17 @@ def calculate_simplified_score(sbp: float, diabetes: int, med_count: int, age: f
 # ---------------------------------------------------------------------------
 # UI LAYOUT & HEADER
 # ---------------------------------------------------------------------------
-st.title("Revised TASH MUCH Prediction Tool")
-st.subheader("Model A — Core Parsimonious Clinical Model")
+st.title("Redeveloped TASH MUCH Prediction & Integer Score Tool")
+st.subheader("Model A — TRIPOD-Aligned Sullivan Derivation")
 
 st.markdown(
     """
-    This tool estimates the probability of **Masked Uncontrolled Hypertension (MUCH)** versus 
+    This application predicts the probability of **Masked Uncontrolled Hypertension (MUCH)** versus 
     **Sustained Controlled Hypertension (SCH)** in treated hypertensive patients with controlled office 
     blood pressure (<140/90 mmHg, ISH 2020 criteria).
     
-    *Note: This tool supersedes the earlier prototype (office SBP + diabetes + ACEI + CCB) hosted on GitHub Pages. 
-    It preserves the original UI workflow while updating all coefficients and validation parameters to match Model A.*
+    *Note: All model parameters reflect direct maximum-likelihood refitting and Harrell bootstrap shrinkage (γ = 0.7709) 
+    on the raw analytic dataset (N=129). Integer score predictions use the authoritative single-predictor score recalibration model.*
     """
 )
 st.divider()
@@ -116,7 +150,7 @@ with col_in1:
         max_value=float(SBP_MAX),
         value=130.0,
         step=1.0,
-        help="Must be within the controlled office BP range (90–139 mmHg per ISH 2020)."
+        help="Controlled office SBP range (90–139 mmHg per ISH 2020)."
     )
     age = st.number_input(
         "Age (years)",
@@ -136,59 +170,24 @@ with col_in2:
         max_value=10,
         value=2,
         step=1,
-        help="Note: Fitted coefficient B=0.000 (p=1.000); retained for clinical parsimony."
+        help="Retained at 0 integer points per §4.4 (shrunk B=0.00008, p=1.000)."
     )
 
 # ---------------------------------------------------------------------------
 # COMPUTATION & OUTPUTS
 # ---------------------------------------------------------------------------
 res = calculate_much_probability(sbp, diabetes, med_count, age)
-score = calculate_simplified_score(sbp, diabetes, med_count, age)
+score = calculate_sullivan_score(sbp, diabetes, med_count, age)
 
 st.divider()
-st.header("1. Continuous Logistic Regression Model (Authoritative)")
-
-m_col1, m_col2, m_col3 = st.columns([1.5, 1, 1])
-
-with m_col1:
-    st.metric("Predicted P(MUCH)", f"{res['probability'] * 100:.1f}%", delta=None)
-    st.caption(f"Log-odds (Linear Predictor): **{res['log_odds']:+.4f}**")
-
-with m_col2:
-    r50 = "MUCH" if res['probability'] >= 0.50 else "SCH"
-    st.markdown(f"**Classification (pt = 0.50)**\n*(Study Anchor)*")
-    if r50 == "MUCH":
-        st.error(f"**{r50}**")
-    else:
-        st.success(f"**{r50}**")
-
-with m_col3:
-    r30 = "MUCH" if res['probability'] >= 0.30 else "SCH"
-    st.markdown(f"**Classification (pt = 0.30)**\n*(Primary-Care Screen)*")
-    if r30 == "MUCH":
-        st.warning(f"**{r30}**")
-    else:
-        st.success(f"**{r30}**")
-
-with st.expander("View Logistic Regression Coefficient Breakdown", expanded=True):
-    breakdown_df = pd.DataFrame({
-        "Predictor Variable": ["Office SBP", "Diabetes", "Medication Count", "Age", "Constant"],
-        "Input Value": [f"{sbp} mmHg", f"{diabetes}", f"{med_count}", f"{age} yrs", "1.0"],
-        "Model Coefficient (B)": [f"{B_SBP:+.3f}", f"{B_DIABETES:+.3f}", f"{B_MED_COUNT:+.3f}", f"{B_AGE:+.3f}", f"{INTERCEPT:+.3f}"],
-        "Log-Odds Contribution": [f"{res['contrib_sbp']:+.4f}", f"{res['contrib_diabetes']:+.4f}", f"{res['contrib_med_count']:+.4f}", f"{res['contrib_age']:+.4f}", f"{res['constant']:+.4f}"]
-    })
-    st.table(breakdown_df)
-
-# ---------------------------------------------------------------------------
-# SIMPLIFIED BEDSIDE SCORE
-# ---------------------------------------------------------------------------
-st.divider()
-st.header("2. Simplified Bedside Integer-Point Score")
+st.header("1. Sullivan Bedside Integer-Point Score (Primary Direct Clinical Instrument)")
 
 sc_col1, sc_col2 = st.columns([1, 2])
 
 with sc_col1:
     st.metric("Total Bedside Score", f"{score['total']} pts")
+    st.metric("Recalibrated P(MUCH | Score)", f"{score['score_prob'] * 100:.1f}%")
+    
     if score['color'] == "red":
         st.error(f"**Tier:** {score['tier']}")
     elif score['color'] == "orange":
@@ -198,30 +197,75 @@ with sc_col1:
 
 with sc_col2:
     pts_df = pd.DataFrame({
-        "Component": ["Office SBP (+5 pts / 10 mmHg > 100)", "Diabetes (+7 pts)", "Age (+1 pt / 10 yrs > 30)", "Medication Count (+0 pts)"],
-        "Points Allocated": [f"{score['pts_sbp']:+d}", f"{score['pts_diabetes']:+d}", f"{score['pts_age']:+d}", f"{score['pts_med']:+d}"]
+        "Predictor Component": [
+            "Office SBP (90–99 mmHg = 0; +5 pts / 10 mmHg > 99)",
+            "Diabetes Status (Present = +7 pts)",
+            "Age (30–39 yrs = 0; +1 pt / 10 yrs > 39)",
+            "Medication Count (0 pts per agent)"
+        ],
+        "Input Value": [f"{sbp} mmHg", f"{diabetes_str}", f"{age} yrs", f"{med_count}"],
+        "Points Allocated": [f"+{score['pts_sbp']}", f"+{score['pts_diabetes']}", f"+{score['pts_age']}", f"+{score['pts_med']}"]
     })
     st.table(pts_df)
+    st.caption("Score Recalibration Formula: logit(P) = -1.8494 + (0.1089 × Score)")
 
 # ---------------------------------------------------------------------------
-# MODEL PERFORMANCE & VALIDATION METRICS
+# CONTINUOUS MODEL COMPARISON
 # ---------------------------------------------------------------------------
 st.divider()
-st.header("3. Model Performance & Validation Dossier")
+st.header("2. Continuous Logistic Regression Model (Raw vs. Shrunk & Recalibrated)")
+
+m_col1, m_col2, m_col3 = st.columns([1.5, 1, 1])
+
+with m_col1:
+    st.metric("Shrunk & Recalibrated P(MUCH)", f"{res['shrunk_prob'] * 100:.1f}%")
+    st.caption(f"Raw Model P(MUCH): **{res['raw_prob'] * 100:.1f}%**")
+
+with m_col2:
+    r50 = "MUCH" if res['shrunk_prob'] >= 0.58 else "SCH"
+    st.markdown("**Classification (pt = 0.58)**\n*(Youden-Optimal Threshold)*")
+    if r50 == "MUCH":
+        st.error(f"**{r50}**")
+    else:
+        st.success(f"**{r50}**")
+
+with m_col3:
+    r30 = "MUCH" if res['shrunk_prob'] >= 0.30 else "SCH"
+    st.markdown("**Classification (pt = 0.30)**\n*(Rule-Out Screen Threshold)*")
+    if r30 == "MUCH":
+        st.warning(f"**{r30}**")
+    else:
+        st.success(f"**{r30}**")
+
+with st.expander("View Full Coefficient & Contribution Comparison Table", expanded=False):
+    breakdown_df = pd.DataFrame({
+        "Predictor Variable": ["Office SBP", "Diabetes", "Medication Count", "Age", "Intercept / Constant"],
+        "Raw Coefficient (B)": [f"{RAW_B_SBP:+.5f}", f"{RAW_B_DIABETES:+.5f}", f"{RAW_B_MED_COUNT:+.5f}", f"{RAW_B_AGE:+.5f}", f"{RAW_INTERCEPT:+.5f}"],
+        "Shrunk Coefficient (γ = 0.7709)": [f"{SHRUNK_B_SBP:+.5f}", f"{SHRUNK_B_DIABETES:+.5f}", f"{SHRUNK_B_MED_COUNT:+.5f}", f"{SHRUNK_B_AGE:+.5f}", f"{SHRUNK_INTERCEPT:+.5f}"],
+        "Shrunk Log-Odds Contribution": [f"{res['shrunk_contrib_sbp']:+.4f}", f"{res['shrunk_contrib_diabetes']:+.4f}", f"{res['shrunk_contrib_med_count']:+.4f}", f"{res['shrunk_contrib_age']:+.4f}", f"{SHRUNK_INTERCEPT:+.4f}"]
+    })
+    st.table(breakdown_df)
+
+# ---------------------------------------------------------------------------
+# MODEL PERFORMANCE & VALIDATION DOSSIER
+# ---------------------------------------------------------------------------
+st.divider()
+st.header("3. Model Performance & TRIPOD Validation Dossier")
 
 p_col1, p_col2, p_col3, p_col4 = st.columns(4)
-p_col1.metric("Optimism-Corrected AUC", "0.6146", help="Harrell Bootstrap B=1000 (Primary Standard)")
-p_col2.metric("Apparent AUC", "0.6604", help="DeLong 95% CI: 0.5632–0.7575")
-p_col3.metric("Calibration Slope", "0.6893", help="Optimism-corrected calibration slope")
-p_col4.metric("Brier Score", "0.2405", help="Optimism-corrected Brier score")
+p_col1.metric("Optimism-Corrected Score AUC", "0.648", help="95% CI: 0.550–0.745 (Harrell Bootstrap B=1000)")
+p_col2.metric("Continuous Model Optimism AUC", "0.616", help="95% CI: 0.519–0.713; Apparent AUC = 0.660")
+p_col3.metric("Shrinkage Factor (γ)", "0.7709", help="Calibration slope shrinkage factor applied to raw coefficients")
+p_col4.metric("Score Calibration Slope", "1.1446", help="Optimism-corrected score calibration slope")
 
 st.info(
     """
-    **Validation Status & Statistical Summary:**
-    - **Development Cohort:** Derived from N=129 complete cases at Tikur Anbessa Specialized Hospital (TASH).
-    - **Outcome Prevalence:** Study empirical MUCH prevalence = 58.1% (tertiary care setting).
-    - **Predictor Significance:** Office SBP is the sole individually significant predictor (p=0.006). Diabetes is borderline (p=0.079). Medication count (p=1.000) and Age (p=0.491) are retained on clinical grounds.
-    - **AUC Discrepancy Note:** An earlier draft reported an AUC of 0.6940; this was confirmed to be an unlabeled N=65 echo-subgroup scoring artifact. The true full-cohort optimism-corrected AUC is **0.6146**.
+    **Derivation Summary & Statistical Notes:**
+    - **Development Cohort:** N=129 complete cases from Tikur Anbessa Specialized Hospital (TASH).
+    - **Outcome Prevalence:** Observed MUCH prevalence = 58.14% (75/129 cases).
+    - **Hosmer–Lemeshow Test:** χ² = 9.24 (df=8, p=0.323), indicating no evidence of gross miscalibration. Apparent Brier Score = 0.223.
+    - **Risk Stratum Boundaries:** Low Risk (<10 pts; P < 0.30), Intermediate Risk (10–19 pts; P: 0.30–0.58), High Risk (≥20 pts; P ≥ 0.58).
+    - **Low-Risk Stratum Limitation:** Only 3.1% (4/129) of the derivation sample score <10 due to high baseline prevalence in tertiary care.
     """
 )
 
@@ -230,10 +274,9 @@ st.info(
 # ---------------------------------------------------------------------------
 st.warning(
     """
-    **CLINICAL DISCLAIMER:** This tool implements Model A, a binary logistic regression model developed on a single 
+    **CLINICAL DISCLAIMER:** This tool implements Model A and its derived Sullivan integer score developed on a single 
     tertiary-referral cohort (TASH, N=129; MUCH prevalence 58.1%) using ISH 2020 criteria. It has undergone internal 
-    (bootstrap) validation only and has **NOT** been externally or temporally validated. Results should be interpreted 
-    by a qualified clinician alongside the full clinical picture and are not a substitute for 24-hour Ambulatory Blood Pressure 
-    Monitoring (ABPM).
+    (bootstrap) validation only and has **NOT** been externally validated. Results should be interpreted 
+    by a qualified clinician alongside the full clinical context and are not a substitute for 24-hour Ambulatory Blood Pressure Monitoring (ABPM).
     """
 )
