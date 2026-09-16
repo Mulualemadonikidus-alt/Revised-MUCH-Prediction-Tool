@@ -82,12 +82,13 @@ def calculate_sullivan_score(sbp: float, diabetes: int, med_count: int, age: flo
     # 2. Diabetes: Absent = 0 pts, Present = 7 pts
     pts_diabetes = 7 if diabetes == 1 else 0
 
-    # 3. Age: 30–39 yrs = 0 pts; +1 pt for every decade after 39 yrs
-    if age < 40.0:
+    # 3. Age: 18–44 yrs = 0 pts; +1 pt for every decade after 44 yrs
+    # Categorization mapping: <45y = 0; 45-54y = 1; 55-64y = 2; 65-74y = 3; >=75y = 4
+    if age < 45.0:
         pts_age = 0
     else:
-        pts_age = int((age - 30.0) // 10.0)
-
+        pts_age = int((age - 45.0) // 10.0) + 1
+       
     # 4. Antihypertensive Medications: Retained at 0 pts (§4.4)
     pts_med = 0
 
@@ -200,7 +201,7 @@ with sc_col2:
         "Predictor Component": [
             "Office SBP (90–99 mmHg = 0; +5 pts / 10 mmHg > 99)",
             "Diabetes Status (Present = +7 pts)",
-            "Age (30–39 yrs = 0; +1 pt / 10 yrs > 39)",
+            "Age (18–44 yrs = 0; +1 pt / 10 yrs > 44)",
             "Medication Count (0 pts per agent)"
         ],
         "Input Value": [f"{sbp} mmHg", f"{diabetes_str}", f"{age} yrs", f"{med_count}"],
